@@ -13,10 +13,17 @@
 
 import csv
 import math
+import datetime
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 import os
+
+import matplotlib
+matplotlib.use("Agg")  # 非交互式后端，适合服务器/无显示器环境
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.dates as mdates
 
 # ─────────────────────────── 参数配置 ────────────────────────────
 DATA_FILE = os.path.join(os.path.dirname(__file__), "1.txt")
@@ -530,9 +537,267 @@ def run_backtest(ticks: list) -> dict:
     }
 
 
+# ─────────────────────────── K 线图 ────────────────────────────
+
+def _ts_ms_to_beijing_minute(ts_ms: int) -> datetime.datetime:
+    """将毫秒时间戳转为北京时间整分钟 datetime（兼容 Python 3.12+）。"""
+    ts_sec = ts_ms / 1000.0
+    minute_ts = int(ts_sec // 60) * 60
+    return datetime.datetime.fromtimestamp(minute_ts, tz=datetime.timezone.utc).replace(
+        tzinfo=None
+    ) + datetime.timedelta(hours=8)
+
+
+def build_1min_bars(ticks: list) -> dict:
+    """
+    将 tick 列表聚合为每交易日的 1 分钟 OHLCV 数据。
+    返回 {trading_day: [(dt, open, high, low, close, volume), ...]}
+    timestamp 字段单位为毫秒（Unix ms）。
+    """
+    from collections import defaultdict
+
+    # 按交易日分组后再按分钟桶聚合
+    day_minute_bars: dict = defaultdict(dict)   # day -> {minute_ts: bar_dict}
+
+    for tick in ticks:
+        ts_sec = tick.timestamp / 1000.0
+        minute_ts = int(ts_sec // 60) * 60        # 该分钟起始秒
+        day = tick.trading_day
+        price = tick.last_price
+
+        if minute_ts not in day_minute_bars[day]:
+            day_minute_bars[day][minute_ts] = {
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0,
+                "minute_ts": minute_ts,
+            }
+        bar = day_minute_bars[day][minute_ts]
+        bar["high"] = max(bar["high"], price)
+        bar["low"] = min(bar["low"], price)
+        bar["close"] = price
+        bar["volume"] += 1   # 用 tick 计数代替（原始量为累计量）
+
+    # 整理成按时间排序的列表
+    result = {}
+    for day, bars_dict in day_minute_bars.items():
+        sorted_bars = sorted(bars_dict.values(), key=lambda b: b["minute_ts"])
+        bar_list = []
+        for b in sorted_bars:
+            dt = _ts_ms_to_beijing_minute(b["minute_ts"] * 1000)
+            bar_list.append((dt, b["open"], b["high"], b["low"], b["close"], b["volume"]))
+        result[day] = bar_list
+    return result
+
+
+def _tick_to_minute_dt(tick) -> datetime.datetime:
+    """将 tick 的 timestamp（ms）转为北京时间分钟级 datetime。"""
+    return _ts_ms_to_beijing_minute(tick.timestamp)
+
+
+def plot_kline_charts(ticks: list, trades: list, output_dir: str = None) -> list:
+    """
+    为每个交易日绘制 1 分钟 K 线图，在图上标注所有入场/出场点。
+    返回生成的图片文件路径列表。
+    """
+    if output_dir is None:
+        output_dir = os.path.dirname(os.path.abspath(__file__))
+
+    bars_by_day = build_1min_bars(ticks)
+    saved_files = []
+
+    for day in sorted(bars_by_day.keys()):
+        bars = bars_by_day[day]
+        if not bars:
+            continue
+
+        dts = [b[0] for b in bars]
+        opens = [b[1] for b in bars]
+        highs = [b[2] for b in bars]
+        lows = [b[3] for b in bars]
+        closes = [b[4] for b in bars]
+        volumes = [b[5] for b in bars]
+
+        # 建立 datetime → bar 索引映射
+        dt_to_idx = {dt: i for i, dt in enumerate(dts)}
+        n = len(bars)
+
+        # ── 收集该交易日的交易信号 ──
+        day_trades = [t for t in trades if t.trading_day == day]
+
+        # 用 tick 索引反查 datetime（需要构建 tick_idx → minute_dt 映射）
+        # 对该日所有 tick 建立映射
+        day_ticks = [tk for tk in ticks if tk.trading_day == day]
+        tick_idx_offset = ticks.index(day_ticks[0]) if day_ticks else 0
+        tick_to_dt = {
+            tick_idx_offset + i: _tick_to_minute_dt(tk)
+            for i, tk in enumerate(day_ticks)
+        }
+
+        # ── 绘图布局：上方 K 线，下方成交量 ──
+        fig, (ax_k, ax_v) = plt.subplots(
+            2, 1,
+            figsize=(max(16, n * 0.18), 9),
+            gridspec_kw={"height_ratios": [3, 1]},
+            sharex=True,
+        )
+        fig.suptitle(
+            f"ru2609  {day[:4]}-{day[4:6]}-{day[6:]}  1分钟K线图",
+            fontsize=14,
+            fontproperties=_get_font(),
+        )
+
+        # ── 绘制蜡烛 ──
+        width = 0.6 / 1440  # 1分钟对应的 matplotlib 日期宽度
+        for i, (dt, o, h, l, c, _) in enumerate(bars):
+            x = mdates.date2num(dt)
+            color = "#d73027" if c >= o else "#1a9850"   # 红涨绿跌（国内习惯）
+            # 实体
+            ax_k.bar(x, abs(c - o), width, bottom=min(o, c), color=color, linewidth=0)
+            # 上下影线
+            ax_k.plot([x, x], [l, min(o, c)], color=color, linewidth=0.8)
+            ax_k.plot([x, x], [max(o, c), h], color=color, linewidth=0.8)
+
+        # ── 标注交易点 ──
+        for trade in day_trades:
+            entry_dt = tick_to_dt.get(trade.entry_tick_idx)
+            exit_dt = tick_to_dt.get(trade.exit_tick_idx)
+
+            if entry_dt and entry_dt in dt_to_idx:
+                ei = dt_to_idx[entry_dt]
+                ex = mdates.date2num(entry_dt)
+                if trade.direction == "long":
+                    ax_k.annotate(
+                        "▲买入",
+                        xy=(ex, lows[ei]),
+                        xytext=(ex, lows[ei] - (highs[ei] - lows[ei]) * 2),
+                        fontproperties=_get_font(),
+                        fontsize=8,
+                        color="#1565c0",
+                        ha="center",
+                        arrowprops=dict(arrowstyle="-|>", color="#1565c0", lw=1.2),
+                    )
+                else:
+                    ax_k.annotate(
+                        "▼卖出",
+                        xy=(ex, highs[ei]),
+                        xytext=(ex, highs[ei] + (highs[ei] - lows[ei]) * 2),
+                        fontproperties=_get_font(),
+                        fontsize=8,
+                        color="#b71c1c",
+                        ha="center",
+                        arrowprops=dict(arrowstyle="-|>", color="#b71c1c", lw=1.2),
+                    )
+
+            if exit_dt and exit_dt in dt_to_idx:
+                xi = dt_to_idx[exit_dt]
+                xx = mdates.date2num(exit_dt)
+                reason_label = {
+                    "stop_loss": "止损✕",
+                    "tp1": "止盈1★",
+                    "tp2": "止盈2★★",
+                    "trailing_stop": "移动止损◆",
+                    "eod_close": "收盘◼",
+                }.get(trade.exit_reason, trade.exit_reason)
+
+                if trade.direction == "long":
+                    ax_k.annotate(
+                        reason_label,
+                        xy=(xx, highs[xi]),
+                        xytext=(xx, highs[xi] + (highs[xi] - lows[xi]) * 2),
+                        fontproperties=_get_font(),
+                        fontsize=7.5,
+                        color="#f57f17",
+                        ha="center",
+                        arrowprops=dict(arrowstyle="-|>", color="#f57f17", lw=1.0),
+                    )
+                else:
+                    ax_k.annotate(
+                        reason_label,
+                        xy=(xx, lows[xi]),
+                        xytext=(xx, lows[xi] - (highs[xi] - lows[xi]) * 2),
+                        fontproperties=_get_font(),
+                        fontsize=7.5,
+                        color="#f57f17",
+                        ha="center",
+                        arrowprops=dict(arrowstyle="-|>", color="#f57f17", lw=1.0),
+                    )
+
+        # ── 成交量柱 ──
+        for i, (dt, o, h, l, c, vol) in enumerate(bars):
+            x = mdates.date2num(dt)
+            color = "#d73027" if c >= o else "#1a9850"
+            ax_v.bar(x, vol, width, color=color, linewidth=0, alpha=0.7)
+
+        # ── 图表格式 ──
+        ax_k.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+        ax_k.xaxis.set_major_locator(mdates.MinuteLocator(byminute=range(0, 60, 30)))
+        ax_k.set_ylabel("价格（元/吨）", fontproperties=_get_font())
+        ax_k.grid(axis="y", linestyle="--", alpha=0.4)
+        ax_k.grid(axis="x", linestyle=":", alpha=0.3)
+
+        ax_v.set_ylabel("Tick数", fontproperties=_get_font())
+        ax_v.grid(axis="y", linestyle="--", alpha=0.3)
+
+        # 图例
+        legend_handles = [
+            mpatches.Patch(color="#1565c0", label="做多入场"),
+            mpatches.Patch(color="#b71c1c", label="做空入场"),
+            mpatches.Patch(color="#f57f17", label="出场点"),
+        ]
+        ax_k.legend(
+            handles=legend_handles,
+            loc="upper left",
+            prop=_get_font(size=9),
+        )
+
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+        out_path = os.path.join(output_dir, f"kline_{day}.png")
+        plt.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved_files.append(out_path)
+
+    return saved_files
+
+
+def _get_font(size: int = 10):
+    """返回支持中文的字体属性对象（优先使用系统 WenQuanYi 字体，无则降级）。"""
+    from matplotlib.font_manager import FontProperties
+    # 先尝试直接用已知字体文件路径（Linux 上通常由 fonts-wqy-microhei 安装）
+    known_paths = [
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    ]
+    for p in known_paths:
+        if os.path.isfile(p):
+            return FontProperties(fname=p, size=size)
+    # 按字体族名回退
+    candidates = [
+        "WenQuanYi Micro Hei",
+        "Noto Sans CJK SC",
+        "SimHei",
+        "Microsoft YaHei",
+        "PingFang SC",
+    ]
+    for name in candidates:
+        try:
+            fp = FontProperties(family=name, size=size)
+            from matplotlib.font_manager import findfont
+            path = findfont(fp, fallback_to_default=False)
+            if path and "DejaVu" not in path:
+                return fp
+        except Exception:
+            pass
+    return FontProperties(size=size)
+
+
 # ─────────────────────────── 报告输出 ────────────────────────────
 
-def print_report(result: dict) -> None:
+def print_report(result: dict, ticks: list = None) -> None:
     trades = result["trades"]
     initial_capital = result["initial_capital"]
     final_nav = result["final_nav"]
@@ -670,6 +935,18 @@ def print_report(result: dict) -> None:
     print(f"  日内最大交易次数  : {MAX_DAILY_TRADES}")
     print(separator)
 
+    # ── 生成 K 线图 ──
+    if ticks:
+        print("\n正在生成 1 分钟 K 线图，请稍候...")
+        saved = plot_kline_charts(ticks, trades)
+        if saved:
+            print("【K 线图已保存】")
+            for path in saved:
+                print(f"  {path}")
+        else:
+            print("（未生成图表）")
+        print(separator)
+
 
 # ─────────────────────────── 入口 ────────────────────────────────
 
@@ -682,4 +959,4 @@ if __name__ == "__main__":
     print(f"交易日：{', '.join(days)}\n")
 
     result = run_backtest(ticks)
-    print_report(result)
+    print_report(result, ticks)
