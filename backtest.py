@@ -225,7 +225,7 @@ def run_backtest(bars: pd.DataFrame) -> dict:
 
             if force_close:
                 exit_price   = row["last_bid"] if direction == 1 else row["last_ask"]
-                close_reason = "DAY_END" if t_str <= "15:00" else "NIGHT_END"
+                close_reason = "DAY_END" if "09:00" <= t_str <= "15:00" else "NIGHT_END"
             elif direction == 1:
                 if row["low"] <= sl_price:       # SL先触发（保守假设）
                     exit_price   = sl_price
