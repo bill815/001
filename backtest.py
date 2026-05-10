@@ -156,6 +156,8 @@ def run_backtest(df: pd.DataFrame) -> dict:
     cumulative_pnl = 0.0
 
     prices = df["LastPrice"].values
+    bid1 = df["BidPrice1"].values    # 对手盘：平多时卖出 / 开空时卖出
+    ask1 = df["AskPrice1"].values    # 对手盘：开多时买入 / 平空时买入
     signals = df["signal"].values
     times = df["time_str"].values
     n = len(df)
@@ -167,7 +169,9 @@ def run_backtest(df: pd.DataFrame) -> dict:
 
         # ── 持仓检查：止盈/止损/超时平仓 ──────────────────────────
         if position is not None:
-            pnl_pts = position.direction * (price - position.entry_price)
+            # 平仓时：多头卖出用BidPrice1，空头买入用AskPrice1
+            exit_price = bid1[i] if position.direction == 1 else ask1[i]
+            pnl_pts = position.direction * (exit_price - position.entry_price)
             hold_ticks = i - position.entry_idx
 
             should_close = False
@@ -194,7 +198,7 @@ def run_backtest(df: pd.DataFrame) -> dict:
                         "entry_idx": position.entry_idx,
                         "exit_idx": i,
                         "entry_price": position.entry_price,
-                        "exit_price": price,
+                        "exit_price": exit_price,
                         "direction": position.direction,
                         "hold_ticks": hold_ticks,
                         "pnl": trade_pnl,
@@ -208,18 +212,22 @@ def run_backtest(df: pd.DataFrame) -> dict:
         # ── 入场判断（空仓时） ─────────────────────────────────────
         if position is None and is_tradable_time(time_str):
             if sig > SIGNAL_THRESHOLD:
+                # 做多：以卖一价（AskPrice1）立即买入
+                entry_price = ask1[i]
                 position = Position(
-                    direction=1, entry_price=price, entry_idx=i
+                    direction=1, entry_price=entry_price, entry_idx=i
                 )
             elif sig < -SIGNAL_THRESHOLD:
+                # 做空：以买一价（BidPrice1）立即卖出
+                entry_price = bid1[i]
                 position = Position(
-                    direction=-1, entry_price=price, entry_idx=i
+                    direction=-1, entry_price=entry_price, entry_idx=i
                 )
 
-    # 如果还有持仓，按最后一个价格平仓
+    # 如果还有持仓，按最后一个盘口价格强制平仓
     if position is not None:
-        price = prices[-1]
-        pnl_pts = position.direction * (price - position.entry_price)
+        exit_price = bid1[-1] if position.direction == 1 else ask1[-1]
+        pnl_pts = position.direction * (exit_price - position.entry_price)
         trade_pnl = (
             pnl_pts * CONTRACT_UNIT * position.size
             - COMMISSION * position.size * 2
@@ -230,7 +238,7 @@ def run_backtest(df: pd.DataFrame) -> dict:
                 "entry_idx": position.entry_idx,
                 "exit_idx": n - 1,
                 "entry_price": position.entry_price,
-                "exit_price": price,
+                "exit_price": exit_price,
                 "direction": position.direction,
                 "hold_ticks": n - 1 - position.entry_idx,
                 "pnl": trade_pnl,
