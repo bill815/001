@@ -173,9 +173,9 @@ def run_backtest(bars: pd.DataFrame) -> dict:
             exit_price = None
 
             if force_close:
-                # 收盘时以盘口对手价平仓
+                # 收盘时以盘口对手价平仓（日盘14:55 或 夜盘23:55）
                 exit_price = row["last_bid"] if direction == 1 else row["last_ask"]
-                close_reason = "EOD"
+                close_reason = "DAY_END" if t_str <= "15:00" else "NIGHT_END"
             elif direction == 1:
                 if row["low"] <= sl_price:       # SL先触发（保守假设）
                     exit_price = sl_price
@@ -270,8 +270,9 @@ def compute_stats(result: dict) -> dict:
     eq = np.array(equity)
 
     total = len(df)
-    winning = int((pnls > 0).sum())
-    losing  = int((pnls <= 0).sum())
+    winning   = int((pnls > 0).sum())
+    breakeven = int((pnls == 0).sum())
+    losing    = int((pnls < 0).sum())
     gross_p = float(pnls[pnls > 0].sum()) if (pnls > 0).any() else 0.0
     gross_l = float(abs(pnls[pnls < 0].sum())) if (pnls < 0).any() else 0.0
     pf = gross_p / gross_l if gross_l > 0 else float("inf")
@@ -287,6 +288,7 @@ def compute_stats(result: dict) -> dict:
         "多头次数":       int(len(long_df)),
         "空头次数":       int(len(short_df)),
         "盈利次数":       winning,
+        "持平次数":       breakeven,
         "亏损次数":       losing,
         "胜率":          f"{winning / total:.2%}",
         "总盈亏(元)":    round(result["final_pnl"], 2),
@@ -433,12 +435,15 @@ def main():
     print("─" * 40)
     net_tp = TAKE_PROFIT * CONTRACT_UNIT - COMMISSION * 2
     net_sl = STOP_LOSS * CONTRACT_UNIT + COMMISSION * 2
+    # 假设典型价差为1tick（5pt），做多成本 = 买入Ask后Bid低5pt；往返约10pt=50元
+    ASSUMED_SPREAD_PTS = TICK_SIZE * 2   # 元/吨，双边价差损耗（进+出各约5pt）
     print(f"  策略类型    : 1分钟K线 EMA三线趋势跟随")
     print(f"  信号计算    : EMA{FAST_EMA}（快）vs EMA{SLOW_EMA}（慢）vs EMA{TREND_EMA}（趋势）")
     print(f"  入场条件    : EMA金叉/死叉 AND |差值|>={MIN_CROSS_DIFF}pt AND 价格顺EMA{TREND_EMA}方向")
     print(f"  出场条件    : 止盈{TAKE_PROFIT}pt / 止损{STOP_LOSS}pt / 反向信号 / 收盘")
     print(f"  止盈        : {TAKE_PROFIT}pt → 净盈利约{net_tp}元/手")
-    print(f"  止损        : {STOP_LOSS}pt → 净亏损约{net_sl+10*TICK_SIZE}元/手（含价差）")
+    net_sl_with_spread = net_sl + ASSUMED_SPREAD_PTS * CONTRACT_UNIT // 2
+    print(f"  止损        : {STOP_LOSS}pt → 净亏损约{net_sl_with_spread}元/手（含约{ASSUMED_SPREAD_PTS}pt价差）")
     print(f"  理论保本率  : {net_sl/(net_tp+net_sl)*100:.1f}%")
     print(f"  单边手续费  : {COMMISSION}元/手")
     print(f"  合约乘数    : {CONTRACT_UNIT}吨/手，最小变动{TICK_SIZE}元/吨")
