@@ -304,32 +304,40 @@ def run_backtest(ticks: list) -> dict:
                     exit_price = pos.stop_loss
                     exit_reason = "stop_loss"
                     exit_lots = pos.lots
-                # 第一止盈（平半仓）
+                # 第一止盈（平半仓；若只剩 1 手则全平）
                 elif not pos.tp1_hit and price >= pos.tp1:
-                    half = max(1, pos.lots // 2)
-                    pnl = (pos.tp1 - pos.entry_price) * CONTRACT_MULTIPLIER * half
-                    trades.append(Trade(
-                        direction=pos.direction,
-                        entry_price=pos.entry_price,
-                        exit_price=pos.tp1,
-                        lots=half,
-                        pnl=pnl,
-                        entry_tick_idx=pos.entry_tick_idx,
-                        exit_tick_idx=idx,
-                        exit_reason="tp1",
-                        trading_day=tick.trading_day,
-                    ))
-                    nav += pnl
-                    daily_pnl += pnl
-                    pos.lots -= half
-                    pos.tp1_hit = True
-                    pos.stop_loss = pos.entry_price  # 移至成本价
-                    if pos.lots <= 0:
-                        position = None
-                        continue
+                    if pos.lots == 1:
+                        # 只有 1 手时直接全平
+                        exit_price = pos.tp1
+                        exit_reason = "tp1"
+                        exit_lots = pos.lots
+                        pos.tp1_hit = True
+                    else:
+                        half = pos.lots // 2
+                        pnl = (pos.tp1 - pos.entry_price) * CONTRACT_MULTIPLIER * half
+                        trades.append(Trade(
+                            direction=pos.direction,
+                            entry_price=pos.entry_price,
+                            exit_price=pos.tp1,
+                            lots=half,
+                            pnl=pnl,
+                            entry_tick_idx=pos.entry_tick_idx,
+                            exit_tick_idx=idx,
+                            exit_reason="tp1",
+                            trading_day=tick.trading_day,
+                        ))
+                        nav += pnl
+                        daily_pnl += pnl
+                        pos.lots -= half
+                        pos.tp1_hit = True
+                        pos.stop_loss = pos.entry_price  # 移至成本价
+                        if pos.lots <= 0:
+                            position = None
+                            continue
                 # 第二止盈（切换移动止损模式，不立即平仓）
                 elif pos.tp1_hit and pos.trailing_stop is None and price >= pos.tp2:
-                    pos.trailing_stop = price - TRAILING_STOP_POINTS
+                    # 保证移动止损不低于成本价（入场价）
+                    pos.trailing_stop = max(pos.entry_price, price - TRAILING_STOP_POINTS)
                 # 移动止损跟踪
                 elif pos.tp1_hit and pos.trailing_stop is not None:
                     new_trail = price - TRAILING_STOP_POINTS
@@ -346,32 +354,39 @@ def run_backtest(ticks: list) -> dict:
                     exit_price = pos.stop_loss
                     exit_reason = "stop_loss"
                     exit_lots = pos.lots
-                # 第一止盈（平半仓）
+                # 第一止盈（平半仓；若只剩 1 手则全平）
                 elif not pos.tp1_hit and price <= pos.tp1:
-                    half = max(1, pos.lots // 2)
-                    pnl = (pos.entry_price - pos.tp1) * CONTRACT_MULTIPLIER * half
-                    trades.append(Trade(
-                        direction=pos.direction,
-                        entry_price=pos.entry_price,
-                        exit_price=pos.tp1,
-                        lots=half,
-                        pnl=pnl,
-                        entry_tick_idx=pos.entry_tick_idx,
-                        exit_tick_idx=idx,
-                        exit_reason="tp1",
-                        trading_day=tick.trading_day,
-                    ))
-                    nav += pnl
-                    daily_pnl += pnl
-                    pos.lots -= half
-                    pos.tp1_hit = True
-                    pos.stop_loss = pos.entry_price  # 移至成本价
-                    if pos.lots <= 0:
-                        position = None
-                        continue
+                    if pos.lots == 1:
+                        exit_price = pos.tp1
+                        exit_reason = "tp1"
+                        exit_lots = pos.lots
+                        pos.tp1_hit = True
+                    else:
+                        half = pos.lots // 2
+                        pnl = (pos.entry_price - pos.tp1) * CONTRACT_MULTIPLIER * half
+                        trades.append(Trade(
+                            direction=pos.direction,
+                            entry_price=pos.entry_price,
+                            exit_price=pos.tp1,
+                            lots=half,
+                            pnl=pnl,
+                            entry_tick_idx=pos.entry_tick_idx,
+                            exit_tick_idx=idx,
+                            exit_reason="tp1",
+                            trading_day=tick.trading_day,
+                        ))
+                        nav += pnl
+                        daily_pnl += pnl
+                        pos.lots -= half
+                        pos.tp1_hit = True
+                        pos.stop_loss = pos.entry_price  # 移至成本价
+                        if pos.lots <= 0:
+                            position = None
+                            continue
                 # 第二止盈（切换移动止损模式，不立即平仓）
                 elif pos.tp1_hit and pos.trailing_stop is None and price <= pos.tp2:
-                    pos.trailing_stop = price + TRAILING_STOP_POINTS
+                    # 保证移动止损不高于成本价（入场价）
+                    pos.trailing_stop = min(pos.entry_price, price + TRAILING_STOP_POINTS)
                 # 移动止损跟踪
                 elif pos.tp1_hit and pos.trailing_stop is not None:
                     new_trail = price + TRAILING_STOP_POINTS
