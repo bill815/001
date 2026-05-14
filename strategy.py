@@ -19,7 +19,7 @@ ru2609 橡胶期货 1分钟趋势交易系统
 参数说明
 --------
 ROLL_BARS        : 动量滚动窗口（K线根数）
-NET_DIFF_THRESH  : 滚动被动动能阈值（标准差约193，单根；3根滚动则用300）
+NET_DIFF_THRESH  : 滚动被动动能阈值（标准差约193，单根；3根滚动建议值250）
 AMOM_THRESH      : 滚动主动动能阈值
 OBI_THRESH       : 订单簿失衡均值阈值，范围 [-1, 1]
 VOL_MULT         : 成交量放大倍数要求
@@ -285,6 +285,7 @@ def print_report(trades: list[Trade]) -> None:
     total_pnl = sum(t.pnl for t in trades)
     avg_win = np.mean([t.pnl for t in wins]) if wins else 0
     avg_loss = np.mean([t.pnl for t in losses]) if losses else 0
+    # 亏损 pnl 为负值（止损价 - 入场价 < 0），avg_loss 为负；abs() 用于计算比率展示
     rr_actual = abs(avg_win / avg_loss) if avg_loss != 0 else float("inf")
 
     gross_profit = sum(t.pnl for t in wins)
