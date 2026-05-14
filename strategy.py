@@ -34,7 +34,6 @@ NET_DIFF_THRESH   : 滚动被动动能阈值（3根之和，约 0.43 std × 3）
 AMOM_THRESH       : 滚动主动动能阈值（3根之和）
 NET_MIN_PER_BAR   : 窗口内每根K线被动动能最低值（一致性阈值）
 AMOM_MIN_PER_BAR  : 窗口内每根K线主动动能最低值（一致性阈值）
-OBI_THRESH        : 订单簿失衡均值阈值，范围 [-1, 1]
 VOL_MULT          : 成交量放大倍数要求
 ATR_MULT          : 止损倍数（ATR 的倍数）
 RR_RATIO          : 盈亏比（目标/止损），默认 3.0 即 1:3
@@ -55,7 +54,6 @@ NET_DIFF_THRESH = 250    # 滚动被动动能阈值（3根之和）
 AMOM_THRESH = 60         # 滚动主动动能阈值（3根之和）
 NET_MIN_PER_BAR = 80     # 每根K线被动动能最低值（一致性阈值，提升胜率关键参数）
 AMOM_MIN_PER_BAR = 20    # 每根K线主动动能最低值（一致性阈值）
-OBI_THRESH = 0.05        # OBI 滚动均值阈值（多头用 obi_max_avg，空头用 obi_min_avg）
 VOL_MULT = 1.5           # 成交量放大倍数要求
 ATR_MULT = 1.5           # 止损 = ATR * ATR_MULT
 RR_RATIO = 3.0           # 目标 = 止损距离 * RR_RATIO → 盈亏比 1:3
@@ -103,10 +101,6 @@ def load_data(csv_path: str) -> pd.DataFrame:
     df["amom_roll_min"] = df["amom_sum"].rolling(ROLL_BARS, min_periods=ROLL_BARS).min()
     df["amom_roll_max"] = df["amom_sum"].rolling(ROLL_BARS, min_periods=ROLL_BARS).max()
 
-    # 订单簿失衡滚动均值（多头看 obi_max，空头看 obi_min）
-    df["obi_max_avg"] = df["obi_max"].rolling(ROLL_BARS, min_periods=ROLL_BARS).mean()
-    df["obi_min_avg"] = df["obi_min"].rolling(ROLL_BARS, min_periods=ROLL_BARS).mean()
-
     # 成交量放大比
     df["vol_ma"] = df["volume"].rolling(VOL_PERIOD, min_periods=VOL_PERIOD).mean()
     df["vol_ratio"] = df["volume"] / df["vol_ma"]
@@ -138,7 +132,6 @@ def long_signal(row: pd.Series) -> bool:
         and row["net_roll_min"] > NET_MIN_PER_BAR        # 每根K线被动动能 > 80
         and row["rolling_amom"] > AMOM_THRESH
         and row["amom_roll_min"] > AMOM_MIN_PER_BAR      # 每根K线主动动能 > 20
-        and row["obi_max_avg"] > OBI_THRESH              # 订单簿买方力量持续
         and row["vol_ratio"] > VOL_MULT                  # 放量突破
         and not row["near_session_end"]                  # 非临近收盘
     )
@@ -154,7 +147,6 @@ def short_signal(row: pd.Series) -> bool:
         and row["net_roll_max"] < -NET_MIN_PER_BAR       # 每根K线被动动能 < -80
         and row["rolling_amom"] < -AMOM_THRESH
         and row["amom_roll_max"] < -AMOM_MIN_PER_BAR     # 每根K线主动动能 < -20
-        and row["obi_min_avg"] < -OBI_THRESH             # 订单簿卖方力量持续
         and row["vol_ratio"] > VOL_MULT                  # 放量突破
         and not row["near_session_end"]                  # 非临近收盘
     )
@@ -366,7 +358,6 @@ def main():
     print(f"  动量滚动窗口  : {ROLL_BARS} 根K线")
     print(f"  滚动被动动能阈值: ±{NET_DIFF_THRESH}（每根K线最低: ±{NET_MIN_PER_BAR}）")
     print(f"  滚动主动动能阈值: ±{AMOM_THRESH}（每根K线最低: ±{AMOM_MIN_PER_BAR}）")
-    print(f"  OBI 滚动均值阈值: ±{OBI_THRESH}（多头 obi_max_avg，空头 obi_min_avg）")
     print(f"  成交量放大要求: {VOL_MULT}×")
     print(f"  止损倍数      : {ATR_MULT} × ATR")
     print(f"  盈亏比        : 1 : {RR_RATIO}")
