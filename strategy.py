@@ -14,7 +14,6 @@ ru2609 橡胶期货 1分钟趋势交易系统
       窗口内每根K线 amom_sum 均超过 AMOM_MIN_PER_BAR（一致性验证）
     - 订单簿失衡均值偏向入场方向
     - 当前K线成交量 > 近10根K线均量的 1.5 倍（放量突破）
-* 大单墙过滤：入场方向前方 0.3% 内存在大单墙时不开仓
 * 止损：入场价 ± ATR(10) × ATR_MULT
 * 目标：入场价 ± ATR(10) × ATR_MULT × RR_RATIO  → 盈亏比 ≥ 1:3
 * 冷静期：平仓后等待 COOLDOWN_BARS 根K线再寻找新信号（避免频繁开平）
@@ -40,12 +39,10 @@ VOL_MULT          : 成交量放大倍数要求
 ATR_MULT          : 止损倍数（ATR 的倍数）
 RR_RATIO          : 盈亏比（目标/止损），默认 3.0 即 1:3
 COOLDOWN_BARS     : 平仓后冷静期（K线根数）
-WALL_PCT          : 大单墙距离过滤百分比
 EMA_FAST_PERIOD   : 短期 EMA 周期（趋势双重过滤）
 EMA_SLOW_PERIOD   : 长期 EMA 周期（趋势主判据）
 """
 
-import ast
 from dataclasses import dataclass
 from typing import Optional
 
@@ -63,7 +60,6 @@ VOL_MULT = 1.5           # 成交量放大倍数要求
 ATR_MULT = 1.5           # 止损 = ATR * ATR_MULT
 RR_RATIO = 3.0           # 目标 = 止损距离 * RR_RATIO → 盈亏比 1:3
 COOLDOWN_BARS = 8        # 平仓后冷静期（适当延长，减少频繁交易）
-WALL_PCT = 0.003         # 大单墙距离过滤（0.3%）
 EMA_FAST_PERIOD = 20     # 短期趋势 EMA 周期（双重趋势确认）
 EMA_SLOW_PERIOD = 50     # 长期趋势 EMA 周期
 ATR_PERIOD = 10          # ATR 周期
@@ -74,13 +70,6 @@ SESSION_END_MINUTES = 15
 
 
 # ──────────────────────── 数据加载与预处理 ────────────────────────
-
-def parse_wall(wall_str: str) -> list:
-    try:
-        return ast.literal_eval(wall_str)
-    except Exception:
-        return []
-
 
 def load_data(csv_path: str) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
@@ -134,24 +123,10 @@ def load_data(csv_path: str) -> pd.DataFrame:
         | ((df["hour"] == 2) & (df["minute"] >= 15))
     )
 
-    # 解析大单墙
-    df["wall_ask_list"] = df["wall_ask"].apply(parse_wall)
-    df["wall_bid_list"] = df["wall_bid"].apply(parse_wall)
-
     return df
 
 
 # ──────────────────────── 信号逻辑 ────────────────────────
-
-def ask_wall_blocks(price: float, walls: list) -> bool:
-    """价格上方 WALL_PCT 范围内有卖单墙，则阻挡做多"""
-    return any(price < w[0] <= price * (1 + WALL_PCT) for w in walls)
-
-
-def bid_wall_blocks(price: float, walls: list) -> bool:
-    """价格下方 WALL_PCT 范围内有买单墙，则阻挡做空"""
-    return any(price * (1 - WALL_PCT) <= w[0] < price for w in walls)
-
 
 def long_signal(row: pd.Series) -> bool:
     return (
@@ -166,7 +141,6 @@ def long_signal(row: pd.Series) -> bool:
         and row["obi_max_avg"] > OBI_THRESH              # 订单簿买方力量持续
         and row["vol_ratio"] > VOL_MULT                  # 放量突破
         and not row["near_session_end"]                  # 非临近收盘
-        and not ask_wall_blocks(row["close"], row["wall_ask_list"])
     )
 
 
@@ -183,7 +157,6 @@ def short_signal(row: pd.Series) -> bool:
         and row["obi_min_avg"] < -OBI_THRESH             # 订单簿卖方力量持续
         and row["vol_ratio"] > VOL_MULT                  # 放量突破
         and not row["near_session_end"]                  # 非临近收盘
-        and not bid_wall_blocks(row["close"], row["wall_bid_list"])
     )
 
 
